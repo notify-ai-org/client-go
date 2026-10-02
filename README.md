@@ -96,13 +96,11 @@ A background dispatcher sends buffered records to acp-server.
 
 ## 📨 Kafka
 
-The core `notify` package has no dependencies. Kafka support is in the `kafka` subpackage (franz-go):
+Kafka support is built into the `notify` package on franz-go (the module's only dependency):
 
 ```go
-import notifykafka "github.com/notify-ai-org/client-go/kafka"
-
 client := notify.New(notify.Config{..., KafkaEnabled: true},
-    notify.WithKafka(notifykafka.Factory(notifykafka.Config{Brokers: []string{"broker:9092"}})))
+    notify.WithKafka(notify.KafkaTransportFactory(notify.KafkaConfig{Brokers: []string{"broker:9092"}})))
 ```
 
 Behavior matches the Java dispatcher:
@@ -137,4 +135,4 @@ Wire format and endpoints are identical. These runtime behaviors differ on purpo
 go test -race ./...
 ```
 
-`kafka/integration_test.go` runs the client against an in-process Kafka cluster (franz-go `kfake`), so no broker is needed. It checks partitions, keys, headers and scheduled-event consumption. `notify/unit_test.go` checks the hash function against values produced by a real JVM.
+`notify/integration_test.go` runs the client against an in-process Kafka cluster (franz-go `kfake`), so no broker is needed. It checks partitions, keys, headers and scheduled-event consumption. `notify/unit_test.go` checks the hash function against values produced by a real JVM.

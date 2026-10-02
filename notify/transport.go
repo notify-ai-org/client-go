@@ -25,7 +25,7 @@ type KafkaCredentials struct {
 	APISecret string
 }
 
-// KafkaTransport is implemented by github.com/notify-ai-org/client-go/kafka.
+// KafkaTransport is implemented by FranzKafkaTransport (see KafkaTransportFactory).
 type KafkaTransport interface {
 	// Partitions returns the partition count of topic.
 	Partitions(ctx context.Context, topic string) (int, error)

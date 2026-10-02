@@ -1,20 +1,18 @@
-package kafka
+package notify
 
 import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/twmb/franz-go/pkg/kfake"
+	"github.com/twmb/franz-go/pkg/kgo"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"github.com/notify-ai-org/client-go/notify"
-	"github.com/twmb/franz-go/pkg/kfake"
-	"github.com/twmb/franz-go/pkg/kgo"
 )
 
-type order struct {
+type kafkaOrder struct {
 	OrderID    string `json:"orderId" notify:"orderId"`
 	CustomerID string `json:"customerId" notify:"customerId"`
 }
@@ -24,8 +22,8 @@ type order struct {
 func TestClientOverRealKafkaProtocol(t *testing.T) {
 	cluster, err := kfake.NewCluster(
 		kfake.NumBrokers(1),
-		kfake.SeedTopics(12, notify.EventsTopic),
-		kfake.SeedTopics(1, notify.ScheduledEventsTopic),
+		kfake.SeedTopics(12, EventsTopic),
+		kfake.SeedTopics(1, ScheduledEventsTopic),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -37,24 +35,24 @@ func TestClientOverRealKafkaProtocol(t *testing.T) {
 	token := enc(map[string]string{"alg": "none"}) + "." + enc(map[string]string{"tenantId": "tenant-42"}) + ".sig"
 	acp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/client/register" {
-			_ = json.NewEncoder(w).Encode(notify.RegistrationResponse{Token: token, KafkaHeaderToken: token})
+			_ = json.NewEncoder(w).Encode(RegistrationResponse{Token: token, KafkaHeaderToken: token})
 			return
 		}
 		w.WriteHeader(http.StatusOK) // vocabulary / rules
 	}))
 	defer acp.Close()
 
-	client := notify.New(notify.Config{ACPServerURL: acp.URL, ClientToken: "client-123", KafkaEnabled: true,
+	client := New(Config{ACPServerURL: acp.URL, ClientToken: "client-123", KafkaEnabled: true,
 		FlushInterval: 10 * time.Millisecond},
-		notify.WithKafka(Factory(Config{Brokers: brokers, GroupID: "test-group"})))
-	place := notify.Event(client, notify.EventSpec{Key: "ORDER_PLACED", Priority: 2},
-		func(_ context.Context, o order) (order, error) { return o, nil })
-	notify.SubjectSupplier(client, "ORDER_PLACED", "", func(_ context.Context, o order) ([]notify.Subject, error) {
-		return []notify.Subject{notify.NewSmsSubject(o.CustomerID, "", nil)}, nil
+		WithKafka(KafkaTransportFactory(KafkaConfig{Brokers: brokers, GroupID: "test-group"})))
+	place := Event(client, EventSpec{Key: "ORDER_PLACED", Priority: 2},
+		func(_ context.Context, o kafkaOrder) (kafkaOrder, error) { return o, nil })
+	SubjectSupplier(client, "ORDER_PLACED", "", func(_ context.Context, o kafkaOrder) ([]Subject, error) {
+		return []Subject{NewSmsSubject(o.CustomerID, "", nil)}, nil
 	})
-	notify.VocabularySupplier(client, "REMINDER", "", func(ctx context.Context, _ order) (any, error) {
-		s, _ := notify.ScheduleFromContext(ctx)
-		return order{OrderID: "scheduled-" + s.ID}, nil
+	VocabularySupplier(client, "REMINDER", "", func(ctx context.Context, _ kafkaOrder) (any, error) {
+		s, _ := ScheduleFromContext(ctx)
+		return kafkaOrder{OrderID: "scheduled-" + s.ID}, nil
 	})
 
 	if err := client.Start(); err != nil {
@@ -66,7 +64,7 @@ func TestClientOverRealKafkaProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := place(ctx, order{OrderID: "O-1", CustomerID: "CUST-1"}); err != nil {
+	if _, err := place(ctx, kafkaOrder{OrderID: "O-1", CustomerID: "CUST-1"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -76,13 +74,13 @@ func TestClientOverRealKafkaProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pub.Close()
-	if err := pub.ProduceSync(ctx, &kgo.Record{Topic: notify.ScheduledEventsTopic,
+	if err := pub.ProduceSync(ctx, &kgo.Record{Topic: ScheduledEventsTopic,
 		Value: []byte(`{"id":"s-1","eventName":"REMINDER","triggerType":"DELAY"}`)}).FirstErr(); err != nil {
 		t.Fatal(err)
 	}
 
 	// Read everything the SDK produced.
-	reader, err := kgo.NewClient(kgo.SeedBrokers(brokers...), kgo.ConsumeTopics(notify.EventsTopic),
+	reader, err := kgo.NewClient(kgo.SeedBrokers(brokers...), kgo.ConsumeTopics(EventsTopic),
 		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()))
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +99,7 @@ func TestClientOverRealKafkaProtocol(t *testing.T) {
 	for key, partition := range want {
 		r, ok := got[key]
 		if !ok {
-			t.Fatalf("missing record %q; got %v", key, keys(got))
+			t.Fatalf("missing record %q; got %v", key, recordKeys(got))
 		}
 		if r.Partition != partition {
 			t.Errorf("%q on partition %d, want %d", key, r.Partition, partition)
@@ -110,7 +108,7 @@ func TestClientOverRealKafkaProtocol(t *testing.T) {
 			t.Errorf("%q headers = %v", key, r.Headers)
 		}
 	}
-	var scheduled notify.EventCapture
+	var scheduled EventCapture
 	if err := json.Unmarshal(got["tenant-42:REMINDER"].Value, &scheduled); err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +123,7 @@ func TestClientOverRealKafkaProtocol(t *testing.T) {
 	}
 }
 
-func keys(m map[string]*kgo.Record) []string {
+func recordKeys(m map[string]*kgo.Record) []string {
 	var out []string
 	for k := range m {
 		out = append(out, k)

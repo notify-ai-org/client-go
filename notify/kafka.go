@@ -1,13 +1,14 @@
-// Package kafka is the Kafka transport for the Notify.ai Go SDK, built on
-// franz-go. It is the counterpart of the Java SDK's KafkaProducer /
-// KafkaConsumer setup (KafkaConfig + Bootstrapper#initializeKafkaClients).
+package notify
+
+// Kafka transport built on franz-go: the counterpart of the Java SDK's
+// KafkaProducer / KafkaConsumer setup (KafkaConfig +
+// Bootstrapper#initializeKafkaClients).
 //
 //	client := notify.New(notify.Config{..., KafkaEnabled: true},
-//	    notify.WithKafka(kafka.Factory(kafka.Config{Brokers: []string{"broker:9092"}})))
+//	    notify.WithKafka(notify.KafkaTransportFactory(notify.KafkaConfig{Brokers: []string{"broker:9092"}})))
 //
-// The SDK decides topic, partition, key and headers; this package only
+// The client decides topic, partition, key and headers; the transport only
 // writes records and consumes scheduled events.
-package kafka
 
 import (
 	"context"
@@ -19,7 +20,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/notify-ai-org/client-go/notify"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/kmsg"
 	"github.com/twmb/franz-go/pkg/sasl"
@@ -27,12 +27,12 @@ import (
 	"github.com/twmb/franz-go/pkg/sasl/scram"
 )
 
-// DefaultBroker matches the Java SDK's kafka.bootstrap-servers default.
-const DefaultBroker = "pkc-41p56.asia-south1.gcp.confluent.cloud:9092"
+// DefaultKafkaBroker matches the Java SDK's kafka.bootstrap-servers default.
+const DefaultKafkaBroker = "pkc-41p56.asia-south1.gcp.confluent.cloud:9092"
 
-// Config mirrors the Java SDK's kafka.* properties.
-type Config struct {
-	// Brokers defaults to DefaultBroker.
+// KafkaConfig mirrors the Java SDK's kafka.* properties.
+type KafkaConfig struct {
+	// Brokers defaults to DefaultKafkaBroker.
 	Brokers []string
 	// GroupID for the scheduled-event consumer. Default "vocab-agent-group".
 	GroupID string
@@ -64,16 +64,16 @@ type Config struct {
 	ExtraOptions []kgo.Opt
 }
 
-// Factory returns a notify.KafkaFactory for notify.WithKafka.
-func Factory(cfg Config) notify.KafkaFactory {
-	return func(ctx context.Context, creds notify.KafkaCredentials) (notify.KafkaTransport, error) {
-		return New(cfg, creds)
+// KafkaTransportFactory returns a KafkaFactory for WithKafka.
+func KafkaTransportFactory(cfg KafkaConfig) KafkaFactory {
+	return func(ctx context.Context, creds KafkaCredentials) (KafkaTransport, error) {
+		return NewKafkaTransport(cfg, creds)
 	}
 }
 
-// Transport implements notify.KafkaTransport.
-type Transport struct {
-	cfg      Config
+// FranzKafkaTransport implements KafkaTransport.
+type FranzKafkaTransport struct {
+	cfg      KafkaConfig
 	base     []kgo.Opt
 	producer *kgo.Client
 
@@ -82,9 +82,9 @@ type Transport struct {
 }
 
 // New builds a transport. creds come from the acp-server registration.
-func New(cfg Config, creds notify.KafkaCredentials) (*Transport, error) {
+func NewKafkaTransport(cfg KafkaConfig, creds KafkaCredentials) (*FranzKafkaTransport, error) {
 	if len(cfg.Brokers) == 0 {
-		cfg.Brokers = []string{DefaultBroker}
+		cfg.Brokers = []string{DefaultKafkaBroker}
 	}
 	if cfg.GroupID == "" {
 		cfg.GroupID = "vocab-agent-group"
@@ -101,18 +101,18 @@ func New(cfg Config, creds notify.KafkaCredentials) (*Transport, error) {
 	}
 
 	base := []kgo.Opt{kgo.SeedBrokers(cfg.Brokers...)}
-	security, err := securityOpts(cfg)
+	security, err := kafkaSecurityOpts(cfg)
 	if err != nil {
 		return nil, err
 	}
 	base = append(base, security...)
 
-	compression, err := compressionCodec(cfg.Compression)
+	compression, err := kafkaCompressionCodec(cfg.Compression)
 	if err != nil {
 		return nil, err
 	}
 	producerOpts := append(append([]kgo.Opt{}, base...),
-		kgo.ClientID(clientID(cfg, creds, "producer")),
+		kgo.ClientID(kafkaClientID(cfg, creds, "producer")),
 		kgo.RecordPartitioner(kgo.ManualPartitioner()),
 		kgo.RequiredAcks(kgo.AllISRAcks()),
 		kgo.ProducerBatchCompression(compression),
@@ -124,12 +124,12 @@ func New(cfg Config, creds notify.KafkaCredentials) (*Transport, error) {
 	if err != nil {
 		return nil, fmt.Errorf("kafka: producer: %w", err)
 	}
-	t := &Transport{cfg: cfg, base: base, producer: producer}
-	t.base = append(t.base, kgo.ClientID(clientID(cfg, creds, "consumer")))
+	t := &FranzKafkaTransport{cfg: cfg, base: base, producer: producer}
+	t.base = append(t.base, kgo.ClientID(kafkaClientID(cfg, creds, "consumer")))
 	return t, nil
 }
 
-func clientID(cfg Config, creds notify.KafkaCredentials, role string) string {
+func kafkaClientID(cfg KafkaConfig, creds KafkaCredentials, role string) string {
 	switch {
 	case cfg.ClientID != "":
 		return cfg.ClientID
@@ -140,7 +140,7 @@ func clientID(cfg Config, creds notify.KafkaCredentials, role string) string {
 	}
 }
 
-func securityOpts(cfg Config) ([]kgo.Opt, error) {
+func kafkaSecurityOpts(cfg KafkaConfig) ([]kgo.Opt, error) {
 	protocol := strings.ToUpper(strings.TrimSpace(cfg.SecurityProtocol))
 	var opts []kgo.Opt
 	switch protocol {
@@ -157,7 +157,7 @@ func securityOpts(cfg Config) ([]kgo.Opt, error) {
 		return nil, fmt.Errorf("kafka: unsupported security protocol %q", cfg.SecurityProtocol)
 	}
 	if strings.HasPrefix(protocol, "SASL") {
-		mech, err := saslMechanism(cfg)
+		mech, err := kafkaSASLMechanism(cfg)
 		if err != nil {
 			return nil, err
 		}
@@ -166,7 +166,7 @@ func securityOpts(cfg Config) ([]kgo.Opt, error) {
 	return opts, nil
 }
 
-func saslMechanism(cfg Config) (sasl.Mechanism, error) {
+func kafkaSASLMechanism(cfg KafkaConfig) (sasl.Mechanism, error) {
 	switch strings.ToUpper(cfg.SASLMechanism) {
 	case "", "PLAIN":
 		return plain.Auth{User: cfg.SASLUsername, Pass: cfg.SASLPassword}.AsMechanism(), nil
@@ -178,7 +178,7 @@ func saslMechanism(cfg Config) (sasl.Mechanism, error) {
 	return nil, fmt.Errorf("kafka: unsupported SASL mechanism %q", cfg.SASLMechanism)
 }
 
-func compressionCodec(name string) (kgo.CompressionCodec, error) {
+func kafkaCompressionCodec(name string) (kgo.CompressionCodec, error) {
 	switch strings.ToLower(name) {
 	case "", "snappy":
 		return kgo.SnappyCompression(), nil
@@ -195,7 +195,7 @@ func compressionCodec(name string) (kgo.CompressionCodec, error) {
 }
 
 // Partitions returns the partition count of topic from cluster metadata.
-func (t *Transport) Partitions(ctx context.Context, topic string) (int, error) {
+func (t *FranzKafkaTransport) Partitions(ctx context.Context, topic string) (int, error) {
 	req := kmsg.NewPtrMetadataRequest()
 	rt := kmsg.NewMetadataRequestTopic()
 	rt.Topic = kmsg.StringPtr(topic)
@@ -216,7 +216,7 @@ func (t *Transport) Partitions(ctx context.Context, topic string) (int, error) {
 }
 
 // Produce writes records synchronously to their pre-chosen partitions.
-func (t *Transport) Produce(ctx context.Context, records []notify.KafkaRecord) error {
+func (t *FranzKafkaTransport) Produce(ctx context.Context, records []KafkaRecord) error {
 	recs := make([]*kgo.Record, 0, len(records))
 	for _, r := range records {
 		rec := &kgo.Record{Topic: r.Topic, Partition: r.Partition, Key: []byte(r.Key), Value: r.Value}
@@ -230,7 +230,7 @@ func (t *Transport) Produce(ctx context.Context, records []notify.KafkaRecord) e
 
 // Consume joins the consumer group on topic and hands each record value to
 // handle, committing offsets after every poll, until ctx is done.
-func (t *Transport) Consume(ctx context.Context, topic string, handle func(context.Context, []byte)) error {
+func (t *FranzKafkaTransport) Consume(ctx context.Context, topic string, handle func(context.Context, []byte)) error {
 	reset := kgo.NewOffset().AtStart()
 	if t.cfg.ResetToLatest {
 		reset = kgo.NewOffset().AtEnd()
@@ -270,7 +270,7 @@ func (t *Transport) Consume(ctx context.Context, topic string, handle func(conte
 }
 
 // Close flushes and closes the producer and any consumers.
-func (t *Transport) Close() error {
+func (t *FranzKafkaTransport) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	err := t.producer.Flush(ctx)

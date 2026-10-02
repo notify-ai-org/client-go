@@ -15,5 +15,5 @@
 // Calling a wrapped event function runs BEFORE callbacks, the function itself,
 // AFTER callbacks, the subject supplier and rules, then buffers an
 // EventCapture that a background dispatcher sends to acp-server over HTTP
-// (POST /api/event) or Kafka (see the kafka subpackage).
+// (POST /api/event) or Kafka (see KafkaTransportFactory).
 package notify
