@@ -206,8 +206,8 @@ func (t *FranzKafkaTransport) Partitions(ctx context.Context, topic string) (int
 	}
 	for _, mt := range resp.Topics {
 		if mt.Topic != nil && *mt.Topic == topic {
-			if err := kerrFor(mt.ErrorCode); err != nil {
-				return 0, err
+			if err := mt.ErrorCode; err != 0 {
+				return 0, fmt.Errorf("kafka: topic %q metadata error: %v", topic, err)
 			}
 			return len(mt.Partitions), nil
 		}
